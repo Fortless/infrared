@@ -149,7 +149,7 @@ func (proxy *Proxy) handleLoginConnection(conn Conn, session Session) error {
 	rconn, err := dialer.Dial(proxyTo)
 	if err != nil {
 		log.Printf("[i] %s did not respond to ping; is the target offline?", proxyTo)
-		proxy.cacheOnlineStatus = false
+		proxy.cacheOnlineStatus = true
 		proxy.cacheOnlineTime = time.Now()
 		return proxy.handleLoginRequest(conn, session)
 	}
