@@ -196,7 +196,7 @@ func (proxy *Proxy) handleStatusConnection(conn Conn, session Session) error {
 		return err
 	}
 
-	statusRequest, err := conn.ReadPacket()
+	statusRequest, err := conn.ReadPacket(true)
 	if err != nil {
 		return err
 	}
@@ -269,13 +269,13 @@ func (proxy *Proxy) handleStatusConnection(conn Conn, session Session) error {
 			return err
 		}
 
-		clientboundResponsePacket, err := rconn.ReadPacket()
+		clientboundResponsePacket, err := rconn.ReadPacket(false)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read status response: %s", err)
 		}
 		clientboundResponse, err := status.UnmarshalClientBoundResponse(clientboundResponsePacket)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to unmarshal status response: %s", err)
 		}
 
 		proxy.cacheOnlineStatus = true
@@ -317,7 +317,7 @@ func (proxy *Proxy) handleStatusConnection(conn Conn, session Session) error {
 		return err
 	}
 
-	pingPacket, err := conn.ReadPacket()
+	pingPacket, err := conn.ReadPacket(true)
 	if err != nil {
 		return err
 	}
@@ -404,7 +404,7 @@ func (proxy *Proxy) handleStatusRequest(conn Conn, online bool) error {
 		return err
 	}
 
-	pingPk, err := conn.ReadPacket()
+	pingPk, err := conn.ReadPacket(true)
 	if err != nil {
 		return err
 	}

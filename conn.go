@@ -13,7 +13,7 @@ type PacketWriter interface {
 }
 
 type PacketReader interface {
-	ReadPacket() (protocol.Packet, error)
+	ReadPacket(limit bool) (protocol.Packet, error)
 }
 
 type PacketPeeker interface {
@@ -61,6 +61,7 @@ type Conn interface {
 	PacketPeeker
 	PacketCipherer
 
+	CloseForce() error
 	Reader() *bufio.Reader
 }
 
@@ -96,8 +97,8 @@ func (c *conn) Write(b []byte) (int, error) {
 }
 
 // ReadPacket read a Packet from Conn.
-func (c *conn) ReadPacket() (protocol.Packet, error) {
-	return protocol.ReadPacket(c.r)
+func (c *conn) ReadPacket(limit bool) (protocol.Packet, error) {
+	return protocol.ReadPacket(c.r, limit)
 }
 
 // PeekPacket peeks a Packet from Conn.
@@ -125,6 +126,18 @@ func (c *conn) SetCipher(ecoStream, decoStream cipher.Stream) {
 		S: ecoStream,
 		W: c.Conn,
 	}
+}
+
+func (c *conn) CloseForce() error {
+	err := c.Conn.(*net.TCPConn).SetLinger(0)
+	if err != nil {
+		return err
+	}
+	err = c.Close()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *conn) Reader() *bufio.Reader {

@@ -311,7 +311,11 @@ func (gateway *Gateway) listenAndServe(listener Listener, addr string) error {
 			if Config.Debug {
 				log.Printf("[>] Incoming %s on listener %s", conn.RemoteAddr(), addr)
 			}
-			defer conn.Close()
+			if gateway.underAttack {
+				defer conn.CloseForce()
+			} else {
+				defer conn.Close()
+			}
 			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 			if err := gateway.serve(conn, addr); err != nil {
 				if errors.Is(err, protocol.ErrInvalidPacketID) || errors.Is(err, protocol.ErrInvalidPacketLength) || errors.Is(err, os.ErrDeadlineExceeded) {
@@ -373,7 +377,7 @@ func (gateway *Gateway) serve(conn Conn, addr string) (rerr error) {
 	}
 
 	err := error(nil)
-	session.handshakePacket, err = conn.ReadPacket()
+	session.handshakePacket, err = conn.ReadPacket(true)
 	if err != nil {
 		return err
 	}
@@ -413,7 +417,7 @@ func (gateway *Gateway) serve(conn Conn, addr string) (rerr error) {
 	session.config = proxy.Config
 
 	if hs.IsLoginRequest() {
-		session.loginPacket, err = conn.ReadPacket()
+		session.loginPacket, err = conn.ReadPacket(true)
 		if err != nil {
 			return err
 		}
@@ -485,7 +489,7 @@ func (gateway *Gateway) handleUnknown(conn Conn, session Session, isLogin bool) 
 	}
 
 	if !isLogin {
-		_, err := conn.ReadPacket()
+		_, err := conn.ReadPacket(true)
 		if err != nil {
 			return err
 		}
@@ -495,7 +499,7 @@ func (gateway *Gateway) handleUnknown(conn Conn, session Session, isLogin bool) 
 			return err
 		}
 
-		pingPacket, err := conn.ReadPacket()
+		pingPacket, err := conn.ReadPacket(true)
 		if err != nil {
 			return err
 		}
@@ -548,10 +552,12 @@ func (gateway *Gateway) geoCheck(conn Conn, session *Session) error {
 
 			res, err := client.Do(req)
 			if err != nil {
+				log.Printf("Cannot query iprisk for %s because of %s", session.ip, err.Error())
 				return errors.New("cannot query iprisk because of " + err.Error())
 			}
 
 			if res.StatusCode != 200 {
+				log.Printf("Failed to query iprisk for %s, status code %s", session.ip, strconv.Itoa(res.StatusCode))
 				return errors.New("failed to query iprisk, error code: " + strconv.Itoa(res.StatusCode))
 			}
 
@@ -658,13 +664,6 @@ func (gateway *Gateway) geoCheck(conn Conn, session *Session) error {
 					if err != nil {
 						return err
 					}
-
-					err = gateway.rdb.Set(ctx, "ip:"+session.ip, "half,"+session.country, time.Hour*24).Err()
-					if err != nil {
-						log.Println(err)
-					}
-
-					return errors.New("blocked for rejoin (geoip)")
 				}
 			}
 		}
@@ -681,16 +680,18 @@ func (gateway *Gateway) geoCheck(conn Conn, session *Session) error {
 		}
 		results := strings.Split(result, ",")
 		session.country = results[1]
-		if gateway.underAttack {
-			if results[0] == "false" {
-				err := conn.Close()
-				if err != nil {
-					return err
-				}
-				handshakeCount.With(prometheus.Labels{"type": "cancelled_cache", "host": session.serverAddress, "country": session.country}).Inc()
-				gateway.rdb.TTL(ctx, "ip:"+session.ip).SetVal(time.Hour * 12)
-				return errors.New("blocked because ip cached as false")
+
+		if results[0] == "false" {
+			err := kickBlocked(conn)
+			if err != nil {
+				return err
 			}
+			handshakeCount.With(prometheus.Labels{"type": "cancelled_cache", "host": session.serverAddress, "country": session.country}).Inc()
+			gateway.rdb.TTL(ctx, "ip:"+session.ip).SetVal(time.Hour * 12)
+			return errors.New("blocked because ip cached as false")
+		}
+
+		if gateway.underAttack {
 			if Config.MojangAPIenabled && !session.config.AllowCracked {
 				err := gateway.loginCheck(conn, session)
 				if err != nil {
@@ -745,6 +746,16 @@ func (gateway *Gateway) usernameCheck(session *Session) error {
 
 func (gateway *Gateway) loginCheck(conn Conn, session *Session) error {
 	result, err := gateway.rdb.Get(ctx, "ip:"+session.ip).Result()
+	if err != nil {
+		if err == redis.ErrClosed {
+			err := gateway.ConnectRedis()
+			if err != nil {
+				return err
+			}
+		} else {
+			return err
+		}
+	}
 	results := strings.Split(result, ",")
 	if results[0] != "true" {
 		verifyToken := make([]byte, 4)
@@ -761,7 +772,7 @@ func (gateway *Gateway) loginCheck(conn Conn, session *Session) error {
 			return err
 		}
 
-		encryptionResponse, err := conn.ReadPacket()
+		encryptionResponse, err := conn.ReadPacket(true)
 		if err != nil {
 			err := kickBlocked(conn)
 			if err != nil {
@@ -947,13 +958,4 @@ func kickBlocked(conn Conn) error {
 	return conn.WritePacket(login.ClientBoundDisconnect{
 		Reason: protocol.Chat(fmt.Sprintf("{\"text\":\"%s\"}", Config.BlockedMessage)),
 	}.Marshal())
-}
-
-func contains(s []string, str string) bool {
-	for _, v := range s {
-		if v == str {
-			return true
-		}
-	}
-	return false
 }
